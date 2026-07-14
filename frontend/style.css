@@ -1,0 +1,195 @@
+:root {
+  --bg: #0f1216;
+  --panel: #161a20;
+  --border: #262c35;
+  --text: #d8dee8;
+  --muted: #7a8394;
+  --green: #21c583;
+  --red: #ef5a6f;
+  --accent: #4f8cff;
+  --accent2: #f2b93c;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+header h1 {
+  font-size: 18px;
+  margin: 0;
+  letter-spacing: 0.02em;
+}
+
+.status {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+.status.connected { color: var(--green); border-color: var(--green); }
+.status.disconnected { color: var(--red); border-color: var(--red); }
+
+main {
+  display: grid;
+  grid-template-columns: 320px 1fr 1fr;
+  gap: 14px;
+  padding: 14px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  main { grid-template-columns: 1fr; }
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.panel h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 16px 0 8px;
+}
+.panel h2:first-child { margin-top: 0; }
+
+.tag {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+.tag.live { background: rgba(33,197,131,0.15); color: var(--green); }
+.tag.replay { background: rgba(242,185,60,0.15); color: var(--accent2); }
+.hidden { display: none; }
+
+form { display: flex; flex-direction: column; gap: 8px; }
+
+.row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  flex: 1;
+}
+
+input, select {
+  background: #0d1013;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-size: 13px;
+}
+
+input[type="range"] { padding: 0; }
+
+button {
+  background: var(--accent);
+  border: none;
+  color: white;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  font-weight: 600;
+}
+button:hover { filter: brightness(1.1); }
+button.danger { background: var(--red); }
+#getStateBtn, #seedBtn { background: #2a303a; }
+
+.muted { color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+.book {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 8px;
+  align-items: start;
+}
+
+.book-head {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+  text-align: center;
+}
+
+.book-col table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.book-col td { padding: 3px 6px; font-size: 12px; text-align: right; }
+.asks td.px { color: var(--red); }
+.bids td.px { color: var(--green); }
+
+.spread {
+  font-size: 11px;
+  color: var(--muted);
+  align-self: center;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  padding: 8px 0;
+}
+
+.scroll-box {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.scroll-box.small { max-height: 150px; padding: 6px 8px; font-size: 11px; }
+
+table { width: 100%; border-collapse: collapse; }
+thead th {
+  position: sticky;
+  top: 0;
+  background: #12161b;
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 4px 6px;
+  text-align: right;
+}
+tbody td {
+  padding: 3px 6px;
+  font-size: 11px;
+  text-align: right;
+  border-top: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+
+.validation {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+}
+.validation.ok { border-color: var(--green); color: var(--green); }
+.validation.bad { border-color: var(--red); color: var(--red); }
+.validation ul { margin: 6px 0 0 16px; padding: 0; }
+.validation .stats { color: var(--text); margin-top: 6px; font-size: 12px; }
+
+.log-line { padding: 2px 0; border-bottom: 1px solid var(--border); color: var(--muted); }
+.log-line b { color: var(--text); }

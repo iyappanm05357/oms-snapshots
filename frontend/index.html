@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Matching Engine — Live &amp; Replay</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header>
+  <h1>Order Matching Engine</h1>
+  <div id="connStatus" class="status disconnected">connecting…</div>
+</header>
+
+<main>
+  <!-- LEFT: order entry + journal/replay controls -->
+  <section class="panel">
+    <h2>Submit Order</h2>
+  
+    <form id="orderForm">
+      <div class="row">
+        <label>Side
+          <select id="side">
+            <option value="Buy">Buy</option>
+            <option value="Sell">Sell</option>
+          </select>
+        </label>
+        <label>Type
+          <select id="orderType">
+            <option value="Limit">Limit</option>
+            <option value="Market">Market</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label>TIF
+          <select id="tif">
+            <option value="GTC">GTC</option>
+            <option value="IOC">IOC</option>
+            <option value="FOK">FOK</option>
+          </select>
+        </label>
+        <label id="priceLabel">Price
+          <input type="number" id="price" step="0.01" value="100.00" />
+        </label>
+      </div>
+      <div class="row">
+        <label>Qty
+          <input type="number" id="qty" step="0.01" value="1.00" />
+        </label>
+      </div>
+      
+      <button type="submit">Submit Order</button>
+    </form> 
+
+    <br/>
+    <form id="streamForm">
+      <button type="submit">Stream Orders</button>
+    </form>
+
+    <h2>Cancel Order</h2>
+    <form id="cancelForm">
+      <div class="row">
+        <label>Order ID
+          <input type="number" id="cancelId" />
+        </label>
+        <button type="submit">Cancel</button>
+      </div>
+    </form>
+
+    <h2>Demo Data</h2>
+    <div class="row">
+      <button id="seedBtn">Seed 5-min demo history</button>
+      <button id="resetBtn" class="danger">Reset engine</button>
+    </div>
+
+    <h2>Journal</h2>
+    <div id="journalInfo" class="muted">no data yet — click "Get state"</div>
+    <button id="getStateBtn">Get state</button>
+
+    <h2>Replay to Timestamp</h2>
+    <div class="row">
+      <label>Date/time
+        <input type="datetime-local" id="replayDatetime" step="1" />
+      </label>
+    </div>
+    <div class="row">
+      <input type="range" id="replaySlider" min="0" max="100" value="100" />
+    </div>
+    <div class="row">
+      <button id="replayBtn">Replay to this time</button>
+      <button id="replayNowBtn">Replay to now</button>
+    </div>
+    <div id="replayMeta" class="muted"></div>
+  </section>
+
+  <!-- MIDDLE: live order book -->
+  <section class="panel">
+    <h2>Live Order Book <span id="liveTag" class="tag live">LIVE</span></h2>
+    <div class="book">
+      <div class="book-col asks">
+        <div class="book-head">Asks</div>
+        <table><tbody id="asksBody"></tbody></table>
+      </div>
+      <div class="spread" id="spread">spread: —</div>
+      <div class="book-col bids">
+        <div class="book-head">Bids</div>
+        <table><tbody id="bidsBody"></tbody></table>
+      </div>
+    </div>
+
+    <h2>Trade Tape</h2>
+    <div class="scroll-box">
+      <table>
+        <thead><tr><th>id</th><th>price</th><th>qty</th><th>maker</th><th>taker</th><th>time</th></tr></thead>
+        <tbody id="tradeTape"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- RIGHT: replay result + validation -->
+  <section class="panel">
+    <h2>Replay Result <span id="replayTag" class="tag replay hidden">REPLAY</span></h2>
+    <div id="validationBox" class="validation muted">Run a replay to see validation results.</div>
+
+    <div class="book">
+      <div class="book-col asks">
+        <div class="book-head">Asks @ T</div>
+        <table><tbody id="replayAsksBody"></tbody></table>
+      </div>
+      <div class="spread" id="replaySpread">spread: —</div>
+      <div class="book-col bids">
+        <div class="book-head">Bids @ T</div>
+        <table><tbody id="replayBidsBody"></tbody></table>
+      </div>
+    </div>
+
+    <h2>Trades up to</h2>
+    <div class="scroll-box">
+      <table>
+        <thead><tr><th>id</th><th>price</th><th>qty</th><th>maker</th><th>taker</th><th>time</th></tr></thead>
+        <tbody id="replayTradeTape"></tbody>
+      </table>
+    </div>
+
+    <h2>Event Log</h2>
+    <div class="scroll-box small">
+      <div id="eventLog"></div>
+    </div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
