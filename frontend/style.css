@@ -79,6 +79,7 @@ main {
 }
 .tag.live { background: rgba(33,197,131,0.15); color: var(--green); }
 .tag.replay { background: rgba(242,185,60,0.15); color: var(--accent2); }
+.tag.streaming { background: rgba(79,140,255,0.18); color: var(--accent); }
 .hidden { display: none; }
 
 form { display: flex; flex-direction: column; gap: 8px; }

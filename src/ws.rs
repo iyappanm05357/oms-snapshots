@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -15,6 +16,13 @@ use crate::order::{Order, OrderType, Side, TimeInForce};
 pub struct AppState {
     pub engine: Mutex<Engine>,
     pub tx: broadcast::Sender<String>,
+    /// Whether the background continuous-order generator is currently
+    /// emitting orders. Toggled by "start_stream" / "stop_stream".
+    pub streaming: AtomicBool,
+    /// Delay between generated orders, in milliseconds. The generator
+    /// task re-reads this every iteration, so changing it takes effect
+    /// on the next tick without restarting the task.
+    pub stream_interval_ms: AtomicU64,
 }
 
 impl AppState {
@@ -23,11 +31,15 @@ impl AppState {
         Arc::new(Self {
             engine: Mutex::new(Engine::new()),
             tx,
+            streaming: AtomicBool::new(false),
+            stream_interval_ms: AtomicU64::new(500),
         })
     }
 }
 
+// ---------------------------------------------------------------------
 // Wire protocol
+// ---------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
@@ -54,6 +66,17 @@ enum ClientMsg {
     SeedDemo,
     #[serde(rename = "reset")]
     Reset,
+    #[serde(rename = "start_stream")]
+    StartStream {
+        #[serde(default = "default_interval")]
+        interval_ms: u64,
+    },
+    #[serde(rename = "stop_stream")]
+    StopStream,
+}
+
+fn default_interval() -> u64 {
+    500
 }
 
 #[derive(Debug, Serialize)]
@@ -86,6 +109,8 @@ enum ServerMsg<'a> {
     },
     #[serde(rename = "error")]
     Error { message: String },
+    #[serde(rename = "stream_status")]
+    StreamStatus { streaming: bool, interval_ms: u64 },
 }
 
 pub async fn ws_handler(
@@ -149,30 +174,7 @@ async fn handle_message(text: &str, state: &Arc<AppState>) {
             price,
             qty,
         } => {
-            let mut engine = state.engine.lock().await;
-            let id = engine.next_id();
-            let order = Order {
-                id,
-                side,
-                order_type,
-                tif,
-                price,
-                qty,
-                remaining_qty: qty,
-                timestamp_ms: Utc::now().timestamp_millis(),
-            };
-            let result = engine.submit(order);
-            let snap = engine.snapshot();
-            drop(engine);
-
-            broadcast_all(state, &ServerMsg::OrderAck {
-                order_id: id,
-                accepted: result.accepted,
-                rejection_reason: result.rejection_reason,
-                trades: result.trades,
-                resting_qty: result.resting_qty,
-            });
-            broadcast_all(state, &ServerMsg::BookSnapshot { book: &snap });
+            submit_and_broadcast(state, side, order_type, tif, price, qty).await;
         }
         ClientMsg::CancelOrder { order_id } => {
             let mut engine = state.engine.lock().await;
@@ -203,6 +205,10 @@ async fn handle_message(text: &str, state: &Arc<AppState>) {
                 latest_ms,
                 server_now_ms: Utc::now().timestamp_millis(),
             });
+            broadcast_one(state, &ServerMsg::StreamStatus {
+                streaming: state.streaming.load(Ordering::Relaxed),
+                interval_ms: state.stream_interval_ms.load(Ordering::Relaxed),
+            });
         }
         ClientMsg::SeedDemo => {
             let mut engine = state.engine.lock().await;
@@ -227,7 +233,61 @@ async fn handle_message(text: &str, state: &Arc<AppState>) {
             drop(engine);
             broadcast_all(state, &ServerMsg::BookSnapshot { book: &snap });
         }
+        ClientMsg::StartStream { interval_ms } => {
+            state.stream_interval_ms.store(interval_ms.max(50), Ordering::Relaxed);
+            state.streaming.store(true, Ordering::Relaxed);
+            broadcast_all(state, &ServerMsg::StreamStatus {
+                streaming: true,
+                interval_ms: state.stream_interval_ms.load(Ordering::Relaxed),
+            });
+        }
+        ClientMsg::StopStream => {
+            state.streaming.store(false, Ordering::Relaxed);
+            broadcast_all(state, &ServerMsg::StreamStatus {
+                streaming: false,
+                interval_ms: state.stream_interval_ms.load(Ordering::Relaxed),
+            });
+        }
     }
+}
+
+/// Submits one order against the engine and broadcasts the result to
+/// every connected client. Shared by the WebSocket message handler and
+/// the continuous background order generator, so both paths produce
+/// identical journal entries and identical live updates.
+pub async fn submit_and_broadcast(
+    state: &Arc<AppState>,
+    side: Side,
+    order_type: OrderType,
+    tif: TimeInForce,
+    price: f64,
+    qty: f64,
+) -> u64 {
+    let mut engine = state.engine.lock().await;
+    let id = engine.next_id();
+    let order = Order {
+        id,
+        side,
+        order_type,
+        tif,
+        price,
+        qty,
+        remaining_qty: qty,
+        timestamp_ms: Utc::now().timestamp_millis(),
+    };
+    let result = engine.submit(order);
+    let snap = engine.snapshot();
+    drop(engine);
+
+    broadcast_all(state, &ServerMsg::OrderAck {
+        order_id: id,
+        accepted: result.accepted,
+        rejection_reason: result.rejection_reason,
+        trades: result.trades,
+        resting_qty: result.resting_qty,
+    });
+    broadcast_all(state, &ServerMsg::BookSnapshot { book: &snap });
+    id
 }
 
 fn broadcast_all(state: &Arc<AppState>, msg: &ServerMsg) {
@@ -236,7 +296,9 @@ fn broadcast_all(state: &Arc<AppState>, msg: &ServerMsg) {
     }
 }
 
-
+// Same as broadcast_all today (single shared channel); kept as a distinct
+// name to make call sites express intent (reply-only vs fan-out) even
+// though both currently go through the same broadcast channel.
 fn broadcast_one(state: &Arc<AppState>, msg: &ServerMsg) {
     broadcast_all(state, msg)
 }

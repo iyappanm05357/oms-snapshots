@@ -33,6 +33,7 @@ function send(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
+// Server -> client message handling
 
 function handleServerMsg(msg) {
   switch (msg.type) {
@@ -42,13 +43,13 @@ function handleServerMsg(msg) {
     case "order_ack":
       logLine(
         msg.accepted
-          ? `order #${msg.order_id} accepted  ${msg.trades.length} trade(s), resting ${msg.resting_qty}`
-          : `order #${msg.order_id} REJECTED  ${msg.rejection_reason}`
+          ? `order #${msg.order_id} accepted — ${msg.trades.length} trade(s), resting ${msg.resting_qty}`
+          : `order #${msg.order_id} REJECTED — ${msg.rejection_reason}`
       );
       msg.trades.forEach((t) => addTradeRow("tradeTape", t));
       break;
     case "cancel_ack":
-      logLine(`cancel #${msg.order_id}  ${msg.found ? "removed" : "not found"}`);
+      logLine(`cancel #${msg.order_id} — ${msg.found ? "removed" : "not found"}`);
       break;
     case "journal_info":
       journalEarliest = msg.earliest_ms;
@@ -58,10 +59,20 @@ function handleServerMsg(msg) {
     case "replay_result":
       renderReplay(msg.result);
       break;
+    case "stream_status":
+      renderStreamStatus(msg);
+      break;
     case "error":
       logLine("ERROR: " + msg.message);
       break;
   }
+}
+
+function renderStreamStatus(msg) {
+  const tag = document.getElementById("streamTag");
+  tag.classList.toggle("hidden", !msg.streaming);
+  tag.className = "tag" + (msg.streaming ? " streaming" : " hidden");
+  document.getElementById("streamInterval").value = msg.interval_ms;
 }
 
 // Rendering
@@ -91,7 +102,7 @@ function renderBook(asksId, bidsId, spreadId, book) {
     const spread = book.asks[0].price - book.bids[0].price;
     spreadEl.textContent = `spread: ${spread.toFixed(2)}`;
   } else {
-    spreadEl.textContent = "spread: ";
+    spreadEl.textContent = "spread: —";
   }
 }
 
@@ -107,11 +118,11 @@ function addTradeRow(tbodyId, t) {
 function renderJournalInfo(msg) {
   const el = document.getElementById("journalInfo");
   if (msg.count === 0) {
-    el.textContent = "journal is empty  seed demo data or submit some orders";
+    el.textContent = "journal is empty — seed demo data or submit some orders";
   } else {
     const earliest = new Date(msg.earliest_ms).toLocaleString();
     const latest = new Date(msg.latest_ms).toLocaleString();
-    el.textContent = `${msg.count} events journaled, spanning ${earliest}: ${latest}`;
+    el.textContent = `${msg.count} events journaled, spanning ${earliest} → ${latest}`;
   }
 
   // Wire the slider/datetime picker range to the journal's actual span.
@@ -136,9 +147,9 @@ function renderReplay(result) {
   const box = document.getElementById("validationBox");
   box.className = "validation " + (v.valid ? "ok" : "bad");
   const targetStr = new Date(result.target_time_ms).toLocaleString();
-  let html = `<div><b>${v.valid ? "VALID " : "INVALID "}</b>  replayed to ${targetStr}</div>`;
+  let html = `<div><b>${v.valid ? "VALID" : "INVALID"}</b> — replayed to ${targetStr}</div>`;
   html += `<div class="stats">events replayed: ${v.events_replayed}, skipped (after target): ${v.events_skipped}, trades produced: ${v.trades_produced}</div>`;
-  html += `<div class="stats">best bid: ${v.best_bid != null ? v.best_bid.toFixed(2) : ""} · best ask: ${v.best_ask != null ? v.best_ask.toFixed(2) : ""}</div>`;
+  html += `<div class="stats">best bid: ${v.best_bid != null ? v.best_bid.toFixed(2) : "—"} · best ask: ${v.best_ask != null ? v.best_ask.toFixed(2) : "—"}</div>`;
   html += `<div class="stats">total bid qty: ${v.total_bid_qty.toFixed(2)} · total ask qty: ${v.total_ask_qty.toFixed(2)}</div>`;
   if (v.errors.length) {
     html += "<ul>" + v.errors.map((e) => `<li>${e}</li>`).join("") + "</ul>";
@@ -152,7 +163,7 @@ function renderReplay(result) {
 function logLine(text) {
   const el = document.getElementById("eventLog");
   const time = new Date().toLocaleTimeString();
-  el.insertAdjacentHTML("afterbegin", `<div class="log-line"><b>${time}</b>  ${text}</div>`);
+  el.insertAdjacentHTML("afterbegin", `<div class="log-line"><b>${time}</b> — ${text}</div>`);
   while (el.children.length > 200) el.removeChild(el.lastChild);
 }
 
@@ -162,6 +173,7 @@ function toLocalInputValue(ms) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+// UI wiring
 
 document.getElementById("orderType").addEventListener("change", (e) => {
   document.getElementById("priceLabel").style.display = e.target.value === "Market" ? "none" : "flex";
@@ -198,6 +210,17 @@ document.getElementById("resetBtn").addEventListener("click", () => {
 });
 
 document.getElementById("getStateBtn").addEventListener("click", () => send({ type: "get_state" }));
+
+document.getElementById("startStreamBtn").addEventListener("click", () => {
+  const interval = parseInt(document.getElementById("streamInterval").value, 10) || 500;
+  send({ type: "start_stream", interval_ms: interval });
+  logLine(`started continuous order stream (every ${interval}ms)`);
+});
+
+document.getElementById("stopStreamBtn").addEventListener("click", () => {
+  send({ type: "stop_stream" });
+  logLine("stopped continuous order stream");
+});
 
 document.getElementById("replayBtn").addEventListener("click", () => {
   const dtStr = document.getElementById("replayDatetime").value;

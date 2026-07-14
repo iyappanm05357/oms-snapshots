@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -16,7 +17,6 @@
   <!-- LEFT: order entry + journal/replay controls -->
   <section class="panel">
     <h2>Submit Order</h2>
-  
     <form id="orderForm">
       <div class="row">
         <label>Side
@@ -49,13 +49,7 @@
           <input type="number" id="qty" step="0.01" value="1.00" />
         </label>
       </div>
-      
       <button type="submit">Submit Order</button>
-    </form> 
-
-    <br/>
-    <form id="streamForm">
-      <button type="submit">Stream Orders</button>
     </form>
 
     <h2>Cancel Order</h2>
@@ -72,6 +66,17 @@
     <div class="row">
       <button id="seedBtn">Seed 5-min demo history</button>
       <button id="resetBtn" class="danger">Reset engine</button>
+    </div>
+
+    <h2>Continuous Order Stream <span id="streamTag" class="tag hidden">STREAMING</span></h2>
+    <div class="row">
+      <label>Interval (ms)
+        <input type="number" id="streamInterval" value="500" min="20" step="50" />
+      </label>
+    </div>
+    <div class="row">
+      <button id="startStreamBtn">Start streaming</button>
+      <button id="stopStreamBtn" class="danger">Stop streaming</button>
     </div>
 
     <h2>Journal</h2>
@@ -135,7 +140,7 @@
       </div>
     </div>
 
-    <h2>Trades up to</h2>
+    <h2>Trades up to T</h2>
     <div class="scroll-box">
       <table>
         <thead><tr><th>id</th><th>price</th><th>qty</th><th>maker</th><th>taker</th><th>time</th></tr></thead>
