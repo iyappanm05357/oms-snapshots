@@ -224,16 +224,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // If we finished because we received everything, the archive has already closed
-    // this replay session on its own — calling stop_replay on it now would just return
-    // "replay session not known". Only stop it explicitly if we bailed out early.
+   
     if received_count.load(Ordering::Relaxed) < MESSAGE_COUNT as usize {
         if let Err(e) = archive.stop_replay(replay_session_id) {
             println!("stop_replay after early exit failed (likely already closed): {e}");
         }
     }
 
-    // Results
     let final_count = received_count.load(Ordering::Relaxed);
     let first = first_value.load(Ordering::Relaxed);
     let last = last_value.load(Ordering::Relaxed);
