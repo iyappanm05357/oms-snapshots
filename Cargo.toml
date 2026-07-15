@@ -16,3 +16,4 @@ chrono = { version = "0.4", features = ["serde"] }
 ordered-float = { version = "4", features = ["serde"] }
 tower-http = { version = "0.5", features = ["fs", "cors"] }
 futures = "0.3"
+rusteron-archive = { version = "0.2.4", features = ["static", "precompile", "extra-logging", "backtrace"] }
