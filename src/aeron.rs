@@ -63,7 +63,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let mut published = 0i64;
 
-    // print!(">>>>>>>");
     for i in 0..MESSAGE_COUNT {
         let bytes = i.to_le_bytes();
         loop {
@@ -139,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("WARNING: Size mismatch!");
     }
 
-    // --- Start replay FIRST, then subscribe scoped to the session id ---
+    // Start replay FIRST, then subscribe scoped to the session id
     println!("\nStarting replay...");
     let replay_params = AeronArchiveReplayParams::builder()
         .position(recording_start)

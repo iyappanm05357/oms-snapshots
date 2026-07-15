@@ -35,23 +35,6 @@ pub fn seed(engine: &mut Engine) {
         (Side::Buy, OrderType::Limit, TimeInForce::GTC, 97.00, 9.0),
         (Side::Sell, OrderType::Limit, TimeInForce::GTC, 103.50, 3.0),
     ];
-
-    // loop {
-    //     for (i, (side, order_type, tif, price, qty)) in script.into_iter().enumerate() {
-    //         let id = engine.next_id();
-    //         let order = Order {
-    //             id,
-    //             side,
-    //             order_type,
-    //             tif,
-    //             price,
-    //             qty,
-    //             remaining_qty: qty,
-    //             timestamp_ms: start + step * i as i64,
-    //         };
-    //         engine.submit(order);
-    //     }
-    // }
     
     for (i, (side, order_type, tif, price, qty)) in script.into_iter().enumerate() {
         let id = engine.next_id();
