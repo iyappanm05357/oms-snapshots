@@ -194,3 +194,8 @@ tbody td {
 
 .log-line { padding: 2px 0; border-bottom: 1px solid var(--border); color: var(--muted); }
 .log-line b { color: var(--text); }
+
+
+.snapshot{
+  background-color: blueviolet; padding: 4px 10px; border-radius: 10px;
+}

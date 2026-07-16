@@ -4,6 +4,7 @@ mod generator;
 mod order;
 mod orderbook;
 mod ws;
+// mod bridge;
 
 use std::net::SocketAddr;
 
@@ -15,6 +16,7 @@ use tower_http::services::ServeDir;
 #[tokio::main]
 async fn main() {
     let state = ws::AppState::new();
+    // let state = bridge::AeronState::new();
 
     tokio::spawn(generator::run(state.clone()));
 

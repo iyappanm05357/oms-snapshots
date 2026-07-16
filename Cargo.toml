@@ -17,5 +17,8 @@ ordered-float = { version = "4", features = ["serde"] }
 tower-http = { version = "0.5", features = ["fs", "cors"] }
 futures = "0.3"
 rusteron-archive = { version = "0.2.4", features = ["static", "precompile", "extra-logging", "backtrace"] }
+
 wincode = "0.5.5"
 singularity={ git="https://github.com/Ex1dev/singularity-shared-types", branch="Feat/rust-shared-types"}
+switchboard={ git="https://github.com/Ex1dev/switchboard-mq", branch="dev"}
+

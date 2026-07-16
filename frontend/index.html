@@ -97,6 +97,36 @@
       <button id="replayNowBtn">Replay to now</button>
     </div>
     <div id="replayMeta" class="muted"></div>
+
+
+     <div class="container" style="margin: 10px 0;">
+        <!-- Take Snapshot -->
+        <div class="row">
+            <label>Snapshots:</label>
+
+            <div id="snapshotList" class="snapshot-list" style="display: flex; gap:2px;">
+                <div class="snapshot" style="background-color: blueviolet; padding: 4px 10px; border-radius: 10px;">1</div>
+            </div>
+
+            <button onclick="takeSnapshot()">
+                Take Snapshot
+            </button>
+        </div>
+        <!-- Replay -->
+        <div class="row">
+            <label>Replay From:</label>
+
+            <div id="replayList" class="snapshot-list" style="display: flex; gap:2px;">
+                <div class="snapshot" style="background-color: blueviolet; padding: 4px 10px; border-radius: 10px;" onclick="selectSnapshot(this)">1</div>
+            </div>
+
+            <button onclick="replay()">
+                Replay
+            </button>
+        </div>
+        <div id="status"></div>
+    </div>
+
   </section>
 
   <!-- MIDDLE: live order book -->
@@ -156,5 +186,7 @@
 </main>
 
 <script src="app.js"></script>
+  
+
 </body>
 </html>
