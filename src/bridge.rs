@@ -1,301 +1,455 @@
-let latestSnapshot = 1;
-let selectedSnapshot = null;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc as std_mpsc;
+use std::sync::Arc;
+use std::time::Duration;
 
-function takeSnapshot() {
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::State;
+use axum::response::IntoResponse;
+use chrono::Utc;
+use futures::stream::{SplitSink, StreamExt};
+use futures::SinkExt;
+use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 
-    latestSnapshot++;
+use crate::order::{Order, OrderType, Side, TimeInForce};
+use crate::publisher::{self, BoxedPublisher};
 
-    // Snapshot list
-    const s1 = document.createElement("div");
-    s1.className = "snapshot";
-    s1.innerText = latestSnapshot;
-    document.getElementById("snapshotList").appendChild(s1);
+pub const AERON_CHANNEL: &str = "aeron:udp?endpoint=localhost:40123";
+pub const AERON_STREAM_ID: i32 = 1001;
+pub const DEFAULT_ACCOUNT_ID: u64 = 1;
+pub const DEFAULT_INSTRUMENT_ID: u64 = 1;
 
-    // Replay list
-    const s2 = document.createElement("div");
-    s2.className = "snapshot";
-    s2.innerText = latestSnapshot;
-    s2.onclick = function () {
-        selectSnapshot(this);
-    };
 
-    document.getElementById("replayList").appendChild(s2);
+
+pub struct AeronState {
+    pub tx: broadcast::Sender<String>,
+    cmd_tx: std_mpsc::Sender<PublishCmd>,
+    pub streaming: AtomicBool,
+    pub stream_interval_ms: AtomicU64,
+    pub total_sent: AtomicU64,
+    pub total_errors: AtomicU64,
+    next_order_id: AtomicU64,
 }
 
-function selectSnapshot(element) {
+impl AeronState {
+  
+    pub fn new() -> Arc<Self> {
+        let (tx, _rx) = broadcast::channel(1024);
+        let (cmd_tx, cmd_rx) = std_mpsc::channel::<PublishCmd>();
 
-    document.querySelectorAll("#replayList .snapshot").forEach(e => {
-        e.classList.remove("selected");
-    });
+        let state = Arc::new(Self {
+            tx,
+            cmd_tx,
+            streaming: AtomicBool::new(false),
+            stream_interval_ms: AtomicU64::new(500),
+            total_sent: AtomicU64::new(0),
+            total_errors: AtomicU64::new(0),
+            next_order_id: AtomicU64::new(0),
+        });
 
-    element.classList.add("selected");
+        let worker_state = state.clone();
+        std::thread::spawn(move || publisher_thread(worker_state, cmd_rx));
 
-    selectedSnapshot = element.innerText;
-}
-
-function replay() {
-
-    if (selectedSnapshot == null) {
-        alert("Please select a snapshot.");
-        return;
+        state
     }
 
-    document.getElementById("status").innerText =
-        "Replaying Snapshot #" + selectedSnapshot;
-
+    fn next_id(&self) -> u64 {
+        self.next_order_id.fetch_add(1, Ordering::Relaxed) + 1
+    }
 }
 
 
-
-
-
-
-const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
-
-let ws;
-let journalEarliest = null;
-let journalLatest = null;
-
-function connect() {
-  ws = new WebSocket(WS_URL);
-
-  ws.onopen = () => {
-    setStatus(true);
-    send({ type: "get_state" });
-  };
-  ws.onclose = () => {
-    setStatus(false);
-    setTimeout(connect, 1500);
-  };
-  ws.onerror = () => ws.close();
-
-  ws.onmessage = (evt) => {
-    const msg = JSON.parse(evt.data);
-    handleServerMsg(msg);
-  };
+enum PublishCmd {
+    Submit(Order),
+    Prefill(PrefillKind),
 }
 
-function setStatus(connected) {
-  const el = document.getElementById("connStatus");
-  el.textContent = connected ? "connected" : "reconnecting…";
-  el.className = "status " + (connected ? "connected" : "disconnected");
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub enum PrefillKind {
+    Dense,
+    Sparse,
+    HighSpread,
+    LowSpread,
 }
 
-function send(obj) {
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+
+fn publisher_thread(state: Arc<AeronState>, cmd_rx: std_mpsc::Receiver<PublishCmd>) {
+    let mut aeron_publisher: BoxedPublisher =
+        publisher::make_publisher(AERON_CHANNEL, AERON_STREAM_ID);
+
+    let mut mid_price: f64 = 100.0;
+    let mut rng_state: u64 = 0xD1B54A32D192ED03;
+    let mut last_tick = std::time::Instant::now();
+
+    loop {
+        match cmd_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(PublishCmd::Submit(order)) => {
+                send_one(&state, &mut aeron_publisher, order);
+            }
+            Ok(PublishCmd::Prefill(kind)) => {
+                run_prefill_once(&state, &mut aeron_publisher, kind);
+            }
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+
+        if state.streaming.load(Ordering::Relaxed) {
+            let interval = state.stream_interval_ms.load(Ordering::Relaxed).max(20);
+            if last_tick.elapsed() >= Duration::from_millis(interval) {
+                last_tick = std::time::Instant::now();
+                let order = random_order(&state, &mut mid_price, &mut rng_state);
+                send_one(&state, &mut aeron_publisher, order);
+            }
+        }
+    }
 }
 
-// Server -> client message handling
-
-function handleServerMsg(msg) {
-  switch (msg.type) {
-    case "book_snapshot":
-      renderBook("asksBody", "bidsBody", "spread", msg.book);
-      break;
-    case "order_ack":
-      logLine(
-        msg.accepted
-          ? `order #${msg.order_id} accepted — ${msg.trades.length} trade(s), resting ${msg.resting_qty}`
-          : `order #${msg.order_id} REJECTED — ${msg.rejection_reason}`
-      );
-      msg.trades.forEach((t) => addTradeRow("tradeTape", t));
-      break;
-    case "cancel_ack":
-      logLine(`cancel #${msg.order_id} — ${msg.found ? "removed" : "not found"}`);
-      break;
-    case "journal_info":
-      journalEarliest = msg.earliest_ms;
-      journalLatest = msg.latest_ms;
-      renderJournalInfo(msg);
-      break;
-    case "replay_result":
-      renderReplay(msg.result);
-      break;
-    case "stream_status":
-      renderStreamStatus(msg);
-      break;
-    case "error":
-      logLine("ERROR: " + msg.message);
-      break;
-  }
-}
-
-function renderStreamStatus(msg) {
-  const tag = document.getElementById("streamTag");
-  tag.classList.toggle("hidden", !msg.streaming);
-  tag.className = "tag" + (msg.streaming ? " streaming" : " hidden");
-  document.getElementById("streamInterval").value = msg.interval_ms;
-}
-
-// Rendering
-
-function renderBook(asksId, bidsId, spreadId, book) {
-  const asksBody = document.getElementById(asksId);
-  const bidsBody = document.getElementById(bidsId);
-  asksBody.innerHTML = "";
-  bidsBody.innerHTML = "";
-
-  // Asks displayed best (lowest) at the bottom, closest to the spread.
-  [...book.asks].reverse().forEach((lvl) => {
-    asksBody.insertAdjacentHTML(
-      "beforeend",
-      `<tr><td class="px">${lvl.price.toFixed(2)}</td><td>${lvl.qty.toFixed(2)}</td><td>${lvl.order_count}</td></tr>`
+fn send_one(state: &Arc<AeronState>, aeron_publisher: &mut BoxedPublisher, order: Order) {
+    let result = publisher::publish_order(
+        aeron_publisher,
+        &order,
+        DEFAULT_ACCOUNT_ID,
+        DEFAULT_INSTRUMENT_ID,
     );
-  });
-  book.bids.forEach((lvl) => {
-    bidsBody.insertAdjacentHTML(
-      "beforeend",
-      `<tr><td class="px">${lvl.price.toFixed(2)}</td><td>${lvl.qty.toFixed(2)}</td><td>${lvl.order_count}</td></tr>`
+
+    match &result {
+        Ok(()) => {
+            state.total_sent.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(_) => {
+            state.total_errors.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    broadcast(
+        state,
+        &ServerMsg::PublishAck {
+            order_id: order.id,
+            side: order.side,
+            order_type: order.order_type,
+            tif: order.tif,
+            price: order.price,
+            qty: order.qty,
+            ok: result.is_ok(),
+            error: result.err(),
+            total_sent: state.total_sent.load(Ordering::Relaxed),
+            total_errors: state.total_errors.load(Ordering::Relaxed),
+        },
     );
-  });
-
-  const spreadEl = document.getElementById(spreadId);
-  if (book.asks.length && book.bids.length) {
-    const spread = book.asks[0].price - book.bids[0].price;
-    spreadEl.textContent = `spread: ${spread.toFixed(2)}`;
-  } else {
-    spreadEl.textContent = "spread: —";
-  }
 }
 
-function addTradeRow(tbodyId, t) {
-  const tbody = document.getElementById(tbodyId);
-  const time = new Date(t.timestamp_ms).toLocaleTimeString();
-  tbody.insertAdjacentHTML(
-    "afterbegin",
-    `<tr><td>${t.id}</td><td>${t.price.toFixed(2)}</td><td>${t.qty.toFixed(2)}</td><td>${t.maker_order_id}</td><td>${t.taker_order_id}</td><td>${time}</td></tr>`
-  );
+fn random_order(state: &Arc<AeronState>, mid_price: &mut f64, rng_state: &mut u64) -> Order {
+    let mut next_f64 = || -> f64 {
+        *rng_state ^= *rng_state << 13;
+        *rng_state ^= *rng_state >> 7;
+        *rng_state ^= *rng_state << 17;
+        (*rng_state >> 11) as f64 / (1u64 << 53) as f64
+    };
+
+    *mid_price += (next_f64() - 0.5) * 0.4;
+    *mid_price = mid_price.clamp(50.0, 500.0);
+
+    let side = if next_f64() < 0.5 { Side::Buy } else { Side::Sell };
+    let is_market = next_f64() < 0.15;
+    let order_type = if is_market { OrderType::Market } else { OrderType::Limit };
+    let tif = if is_market {
+        TimeInForce::IOC
+    } else {
+        match (next_f64() * 10.0) as u32 {
+            0..=6 => TimeInForce::GTC,
+            7..=8 => TimeInForce::IOC,
+            _ => TimeInForce::FOK,
+        }
+    };
+
+    let offset = next_f64() * 3.0 - 1.0;
+    let price = match side {
+        Side::Buy => *mid_price - offset,
+        Side::Sell => *mid_price + offset,
+    };
+    let price = ((price.max(0.01)) * 100.0).round() / 100.0;
+    let qty = (1.0 + next_f64() * 9.0 * 100.0).round() / 100.0;
+
+    build_order(state, side, order_type, tif, price, qty)
 }
 
-function renderJournalInfo(msg) {
-  const el = document.getElementById("journalInfo");
-  if (msg.count === 0) {
-    el.textContent = "journal is empty — seed demo data or submit some orders";
-  } else {
-    const earliest = new Date(msg.earliest_ms).toLocaleString();
-    const latest = new Date(msg.latest_ms).toLocaleString();
-    el.textContent = `${msg.count} events journaled, spanning ${earliest} → ${latest}`;
-  }
-
-  // Wire the slider/datetime picker range to the journal's actual span.
-  if (msg.earliest_ms != null && msg.latest_ms != null) {
-    const slider = document.getElementById("replaySlider");
-    slider.min = msg.earliest_ms;
-    slider.max = msg.latest_ms;
-    slider.value = msg.latest_ms;
-    document.getElementById("replayDatetime").value = toLocalInputValue(msg.latest_ms);
-  }
+fn build_order(
+    state: &Arc<AeronState>,
+    side: Side,
+    order_type: OrderType,
+    tif: TimeInForce,
+    price: f64,
+    qty: f64,
+) -> Order {
+    Order {
+        id: state.next_id(),
+        side,
+        order_type,
+        tif,
+        price,
+        qty,
+        remaining_qty: qty,
+        timestamp_ms: Utc::now().timestamp_millis(),
+    }
 }
 
-function renderReplay(result) {
-  document.getElementById("replayTag").classList.remove("hidden");
-  renderBook("replayAsksBody", "replayBidsBody", "replaySpread", result.book);
 
-  const tbody = document.getElementById("replayTradeTape");
-  tbody.innerHTML = "";
-  result.trades.forEach((t) => addTradeRow("replayTradeTape", t));
 
-  const v = result.validation;
-  const box = document.getElementById("validationBox");
-  box.className = "validation " + (v.valid ? "ok" : "bad");
-  const targetStr = new Date(result.target_time_ms).toLocaleString();
-  let html = `<div><b>${v.valid ? "VALID" : "INVALID"}</b> — replayed to ${targetStr}</div>`;
-  html += `<div class="stats">events replayed: ${v.events_replayed}, skipped (after target): ${v.events_skipped}, trades produced: ${v.trades_produced}</div>`;
-  html += `<div class="stats">best bid: ${v.best_bid != null ? v.best_bid.toFixed(2) : "—"} · best ask: ${v.best_ask != null ? v.best_ask.toFixed(2) : "—"}</div>`;
-  html += `<div class="stats">total bid qty: ${v.total_bid_qty.toFixed(2)} · total ask qty: ${v.total_ask_qty.toFixed(2)}</div>`;
-  if (v.errors.length) {
-    html += "<ul>" + v.errors.map((e) => `<li>${e}</li>`).join("") + "</ul>";
-  }
-  box.innerHTML = html;
+fn run_prefill_once(state: &Arc<AeronState>, aeron_publisher: &mut BoxedPublisher, kind: PrefillKind) {
+    let mid = 100.0_f64;
+    let orders: Vec<Order> = match kind {
+        PrefillKind::Dense => prefill_levels(state, mid, 0.10, 200, |i| 10 + ((200 - i + 1) % 20)),
+        PrefillKind::Sparse => prefill_levels(state, mid, 2.00, 50, |i| (i % 3) + 1),
+        PrefillKind::HighSpread => {
+            prefill_levels_gapped(state, mid, 5.00, 1.00, 100, |i| (i % 4) + 2)
+        }
+        PrefillKind::LowSpread => prefill_levels(state, mid, 0.01, 200, |i| 15 + ((200 - i + 1) % 15)),
+    };
 
-  document.getElementById("replayMeta").textContent =
-    `Reconstructed book as of ${targetStr} from ${v.events_replayed} journaled event(s).`;
+    let total = orders.len();
+    let mut sent = 0usize;
+    for order in orders {
+        let order_id = order.id;
+        let order_side = order.side;
+        let order_type = order.order_type;
+        let order_tif = order.tif;
+        let order_price = order.price;
+        let order_qty = order.qty;
+
+        let result = publisher::publish_order(
+            aeron_publisher,
+            &order,
+            DEFAULT_ACCOUNT_ID,
+            DEFAULT_INSTRUMENT_ID,
+        );
+        if result.is_ok() {
+            sent += 1;
+            state.total_sent.fetch_add(1, Ordering::Relaxed);
+        } else {
+            state.total_errors.fetch_add(1, Ordering::Relaxed);
+        }
+
+        broadcast(
+            state,
+            &ServerMsg::PublishAck {
+                order_id,
+                side: order_side,
+                order_type,
+                tif: order_tif,
+                price: order_price,
+                qty: order_qty,
+                ok: result.is_ok(),
+                error: result.err(),
+                total_sent: state.total_sent.load(Ordering::Relaxed),
+                total_errors: state.total_errors.load(Ordering::Relaxed),
+            },
+        );
+    }
+
+    broadcast(state, &ServerMsg::PrefillResult { kind, sent, total });
 }
 
-function logLine(text) {
-  const el = document.getElementById("eventLog");
-  const time = new Date().toLocaleTimeString();
-  el.insertAdjacentHTML("afterbegin", `<div class="log-line"><b>${time}</b> — ${text}</div>`);
-  while (el.children.length > 200) el.removeChild(el.lastChild);
+fn prefill_levels(
+    state: &Arc<AeronState>,
+    mid: f64,
+    tick: f64,
+    levels: u64,
+    qty_fn: impl Fn(u64) -> u64,
+) -> Vec<Order> {
+    let mut out = Vec::with_capacity((levels * 2) as usize);
+    for i in 1..=levels {
+        let qty = qty_fn(i) as f64;
+        out.push(build_order(state, Side::Buy, OrderType::Limit, TimeInForce::GTC, mid - i as f64 * tick, qty));
+        out.push(build_order(state, Side::Sell, OrderType::Limit, TimeInForce::GTC, mid + i as f64 * tick, qty));
+    }
+    out
 }
 
-function toLocalInputValue(ms) {
-  const d = new Date(ms);
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+fn prefill_levels_gapped(
+    state: &Arc<AeronState>,
+    mid: f64,
+    base_gap: f64,
+    tick: f64,
+    levels: u64,
+    qty_fn: impl Fn(u64) -> u64,
+) -> Vec<Order> {
+    let mut out = Vec::with_capacity((levels * 2) as usize);
+    for i in 1..=levels {
+        let qty = qty_fn(i) as f64;
+        let gap = base_gap + (i - 1) as f64 * tick;
+        out.push(build_order(state, Side::Buy, OrderType::Limit, TimeInForce::GTC, mid - gap, qty));
+        out.push(build_order(state, Side::Sell, OrderType::Limit, TimeInForce::GTC, mid + gap, qty));
+    }
+    out
 }
 
-// UI wiring
+// Wire protocol
 
-document.getElementById("orderType").addEventListener("change", (e) => {
-  document.getElementById("priceLabel").style.display = e.target.value === "Market" ? "none" : "flex";
-});
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum ClientMsg {
+    #[serde(rename = "submit_order")]
+    SubmitOrder {
+        side: Side,
+        order_type: OrderType,
+        tif: TimeInForce,
+        #[serde(default)]
+        price: f64,
+        qty: f64,
+    },
+    #[serde(rename = "run_prefill")]
+    RunPrefill { kind: PrefillKind },
+    #[serde(rename = "start_stream")]
+    StartStream {
+        #[serde(default = "default_interval")]
+        interval_ms: u64,
+    },
+    #[serde(rename = "stop_stream")]
+    StopStream,
+    #[serde(rename = "get_state")]
+    GetState,
+}
 
-document.getElementById("orderForm").addEventListener("submit", (e) => {
-  e.preventDefault();
-  send({
-    type: "submit_order",
-    side: document.getElementById("side").value,
-    order_type: document.getElementById("orderType").value,
-    tif: document.getElementById("tif").value,
-    price: parseFloat(document.getElementById("price").value) || 0,
-    qty: parseFloat(document.getElementById("qty").value),
-  });
-});
+fn default_interval() -> u64 {
+    500
+}
 
-document.getElementById("cancelForm").addEventListener("submit", (e) => {
-  e.preventDefault();
-  const id = parseInt(document.getElementById("cancelId").value, 10);
-  if (!Number.isNaN(id)) send({ type: "cancel_order", order_id: id });
-});
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+enum ServerMsg {
+    #[serde(rename = "publish_ack")]
+    PublishAck {
+        order_id: u64,
+        side: Side,
+        order_type: OrderType,
+        tif: TimeInForce,
+        price: f64,
+        qty: f64,
+        ok: bool,
+        error: Option<String>,
+        total_sent: u64,
+        total_errors: u64,
+    },
+    #[serde(rename = "prefill_result")]
+    PrefillResult {
+        kind: PrefillKind,
+        sent: usize,
+        total: usize,
+    },
+    #[serde(rename = "stream_status")]
+    StreamStatus { streaming: bool, interval_ms: u64 },
+    #[serde(rename = "stats")]
+    Stats {
+        total_sent: u64,
+        total_errors: u64,
+        streaming: bool,
+        interval_ms: u64,
+    },
+    #[serde(rename = "error")]
+    Error { message: String },
+}
 
-document.getElementById("seedBtn").addEventListener("click", () => {
-  send({ type: "seed_demo" });
-  logLine("seeded 5 minutes of demo history");
-});
+fn broadcast(state: &Arc<AeronState>, msg: &ServerMsg) {
+    if let Ok(json) = serde_json::to_string(msg) {
+        let _ = state.tx.send(json);
+    }
+}
 
-document.getElementById("resetBtn").addEventListener("click", () => {
-  if (confirm("Reset the engine? This clears the live book and the journal.")) {
-    send({ type: "reset" });
-    logLine("engine reset");
-  }
-});
+// Axum WebSocket handler
 
-document.getElementById("getStateBtn").addEventListener("click", () => send({ type: "get_state" }));
+pub async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AeronState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, state))
+}
 
-document.getElementById("startStreamBtn").addEventListener("click", () => {
-  const interval = parseInt(document.getElementById("streamInterval").value, 10) || 500;
-  send({ type: "start_stream", interval_ms: interval });
-  logLine(`started continuous order stream (every ${interval}ms)`);
-});
+async fn handle_socket(socket: WebSocket, state: Arc<AeronState>) {
+    let (mut sender, mut receiver) = socket.split();
+    let mut rx = state.tx.subscribe();
 
-document.getElementById("stopStreamBtn").addEventListener("click", () => {
-  send({ type: "stop_stream" });
-  logLine("stopped continuous order stream");
-});
+    send_stats(&mut sender, &state).await;
 
-document.getElementById("replayBtn").addEventListener("click", () => {
-  const dtStr = document.getElementById("replayDatetime").value;
-  if (!dtStr) return;
-  const targetMs = new Date(dtStr).getTime();
-  send({ type: "replay", target_time_ms: targetMs });
-});
+    let mut send_task = tokio::spawn(async move {
+        while let Ok(msg) = rx.recv().await {
+            if sender.send(Message::Text(msg)).await.is_err() {
+                break;
+            }
+        }
+    });
 
-document.getElementById("replayNowBtn").addEventListener("click", () => {
-  send({ type: "replay", target_time_ms: Date.now() });
-});
+    let state_for_recv = state.clone();
+    let mut recv_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = receiver.next().await {
+            if let Message::Text(text) = msg {
+                handle_message(&text, &state_for_recv).await;
+            }
+        }
+    });
 
-document.getElementById("replaySlider").addEventListener("input", (e) => {
-  const ms = parseInt(e.target.value, 10);
-  document.getElementById("replayDatetime").value = toLocalInputValue(ms);
-});
+    tokio::select! {
+        _ = &mut send_task => recv_task.abort(),
+        _ = &mut recv_task => send_task.abort(),
+    }
+}
 
-document.getElementById("replaySlider").addEventListener("change", (e) => {
-  const ms = parseInt(e.target.value, 10);
-  send({ type: "replay", target_time_ms: ms });
-});
+async fn send_stats(sender: &mut SplitSink<WebSocket, Message>, state: &Arc<AeronState>) {
+    let msg = ServerMsg::Stats {
+        total_sent: state.total_sent.load(Ordering::Relaxed),
+        total_errors: state.total_errors.load(Ordering::Relaxed),
+        streaming: state.streaming.load(Ordering::Relaxed),
+        interval_ms: state.stream_interval_ms.load(Ordering::Relaxed),
+    };
+    if let Ok(json) = serde_json::to_string(&msg) {
+        let _ = sender.send(Message::Text(json)).await;
+    }
+}
 
-connect();
+async fn handle_message(text: &str, state: &Arc<AeronState>) {
+    let parsed: Result<ClientMsg, _> = serde_json::from_str(text);
+    let msg = match parsed {
+        Ok(m) => m,
+        Err(e) => {
+            broadcast(state, &ServerMsg::Error { message: format!("bad message: {e}") });
+            return;
+        }
+    };
 
-
-
+    match msg {
+        ClientMsg::SubmitOrder { side, order_type, tif, price, qty } => {
+            let order = build_order(state, side, order_type, tif, price, qty);
+            if state.cmd_tx.send(PublishCmd::Submit(order)).is_err() {
+                broadcast(state, &ServerMsg::Error { message: "publisher thread is not running".into() });
+            }
+        }
+        ClientMsg::RunPrefill { kind } => {
+            if state.cmd_tx.send(PublishCmd::Prefill(kind)).is_err() {
+                broadcast(state, &ServerMsg::Error { message: "publisher thread is not running".into() });
+            }
+        }
+        ClientMsg::StartStream { interval_ms } => {
+            state.stream_interval_ms.store(interval_ms.max(20), Ordering::Relaxed);
+            state.streaming.store(true, Ordering::Relaxed);
+            broadcast(state, &ServerMsg::StreamStatus {
+                streaming: true,
+                interval_ms: state.stream_interval_ms.load(Ordering::Relaxed),
+            });
+        }
+        ClientMsg::StopStream => {
+            state.streaming.store(false, Ordering::Relaxed);
+            broadcast(state, &ServerMsg::StreamStatus {
+                streaming: false,
+                interval_ms: state.stream_interval_ms.load(Ordering::Relaxed),
+            });
+        }
+        ClientMsg::GetState => {
+            broadcast(state, &ServerMsg::Stats {
+                total_sent: state.total_sent.load(Ordering::Relaxed),
+                total_errors: state.total_errors.load(Ordering::Relaxed),
+                streaming: state.streaming.load(Ordering::Relaxed),
+                interval_ms: state.stream_interval_ms.load(Ordering::Relaxed),
+            });
+        }
+    }
+}
